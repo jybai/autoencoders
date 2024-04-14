@@ -2,130 +2,208 @@ from typing import Optional
 
 import torch
 import wandb
+from transformer_lens.loading_from_pretrained import convert_hf_model_config
 from autoencoder import *
-from buffer import *
+from buffer import ActivationsBuffer, ActivationsBufferConfig
 import time
-from tqdm import tqdm
+from tqdm.auto import tqdm, trange
 from utils import *
 import argparse
 import gc
+import yaml
 
-lr = 1e-4
-num_activations = int(2e9)  # total number of tokens to train on, the dataset will wrap around as needed
-batch_size = 8192
-beta1 = 0
-beta2 = 0.9999
-steps_per_report = 100
-steps_per_save = 10000
-expansion = 4
-n_dim = 4096
-m_dim = n_dim * expansion
-# To be used when gpu memory is tight, shuffles the encoder and buffer model back and forth from gpu to cpu to limit
-# peak gpu memory usage
-perform_offloading = False
+def get_activation_size(model_name: str, layer_loc: str):
+    assert layer_loc in [
+        "residual",
+        "mlp",
+        "attn",
+        "attn_concat",
+        "mlpout",
+    ], f"Layer location {layer_loc} not supported"
+    model_cfg = convert_hf_model_config(model_name)
 
-primary_device = "cuda:0"
-offload_device = "cpu"
+    if layer_loc == "residual":
+        return model_cfg["d_model"]
+    elif layer_loc == "mlp":
+        return model_cfg["d_mlp"]
+    elif layer_loc == "attn":
+        return model_cfg["d_head"] * model_cfg["n_heads"]
+    elif layer_loc == "mlpout":
+        return model_cfg["d_model"]
+    elif layer_loc == "attn_concat":
+        return model_cfg["d_head"] * model_cfg["n_heads"]
+    else:
+        return None
 
-wandb_project = "autoencoder"
-wandb_entity = "collingray"
+def layer_loc_to_act_site(layer_loc):
+    '''
+    https://github.com/chepingt/sparse_dictionary/blob/717636e9870656811b307c308e860cbf4e585198/sae_utils/activation_dataset.py#L69
+    '''
+    assert layer_loc in [
+        "residual",
+        "mlp",
+        "attn",
+        "attn_concat",
+        "mlpout",
+    ], f"Layer location {layer_loc} not supported"
 
-argparser = argparse.ArgumentParser()
-argparser.add_argument("--wb_name", type=Optional[str], default=None)
-argparser.add_argument("--wb_notes", type=Optional[str], default=None)
-args = argparser.parse_args()
-wb_name = args.wb_name
-wb_notes = args.wb_notes
+    if layer_loc == "residual":
+        return "hook_resid_post"
+    elif layer_loc == "attn_concat":
+        return "attn.hook_z"
+    elif layer_loc == "mlp":
+        return "mlp.hook_post"
+    elif layer_loc == "attn":
+        return "hook_resid_post"
+    elif layer_loc == "mlpout":
+        return "hook_mlp_out"
+    else:
+        return None
 
-wandb.init(project=wandb_project, entity=wandb_entity, name=wb_name, notes=wb_notes)
+def parse_args():
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument("--model_cfg_yaml", type=str)
+    argparser.add_argument("--layers", type=int, nargs='+', default=[0])
+    argparser.add_argument("--layer_loc", type=str, default="mlpout", 
+                           choices=["residual", "mlp", "attn", "attn_concat", "mlpout"])
 
-buffer_cfg = ActivationsBufferConfig(
-    model_name="mistralai/Mistral-7B-Instruct-v0.1",
-    layers=[0],
-    act_site="hook_mlp_out",
-    dataset_name="roneneldan/TinyStories",
-    dataset_split="train",
-    buffer_size=2 ** 20,
-    device=primary_device,
-    buffer_device=offload_device,
-    offload_device=offload_device if perform_offloading else None,
-    shuffle_buffer=True,
-    model_batch_size=16,
-    samples_per_seq=None,
-    max_seq_length=2048,
-)
-buffer = ActivationsBuffer(buffer_cfg)
+    argparser.add_argument("--lr", type=float, default=1e-4)
+    argparser.add_argument("--beta1", type=float, default=0)
+    argparser.add_argument("--beta2", type=float, default=0.999)
+    argparser.add_argument("--num_activations", type=int, default=int(2e9), 
+                           help="total number of tokens to train on, the dataset will wrap around as needed")
+    argparser.add_argument("--model_batch_size", type=int, default=16)
+    argparser.add_argument("--batch_size", type=int, default=8192)
+    argparser.add_argument("--buffer_size", type=int, default=int(2 ** 20))
+    argparser.add_argument("--lambda_reg", type=float, default=1e-3)
 
-encoder_cfg = AutoEncoderConfig(
-    n_dim=n_dim,
-    m_dim=m_dim,
-    device=primary_device,
-    lambda_reg=1e-3,
-    tied=False,
-    record_data=True,
-)
-encoder = AutoEncoder(encoder_cfg)
+    argparser.add_argument("--steps_per_report", type=int, default=100)
+    argparser.add_argument("--steps_per_save", type=int, default=10000)
 
-wandb.config.update({
-    "max_lr": lr,
-    "num_activations": num_activations,
-    "batch_size": batch_size,
-    "beta1": beta1,
-    "beta2": beta2,
-    "perform_offloading": perform_offloading,
-    "encoder": encoder_cfg.__dict__,
-    "buffer": buffer_cfg.__dict__,
-})
+    argparser.add_argument("--expansion", type=int, default=4)
+    # argparser.add_argument("--n_dim", type=int, default=4096) # TODO: automatically infer n_dim given the selected layer from the model
 
-optimizer = torch.optim.Adam(encoder.parameters(), lr=lr, betas=(beta1, beta2), foreach=False)
-scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    optimizer,
-    max_lr=lr,
-    total_steps=num_activations // batch_size,
-    pct_start=0.1
-)
+    argparser.add_argument("--wb_name", type=Optional[str], default=None)
+    argparser.add_argument("--wb_notes", type=Optional[str], default=None)
+    argparser.add_argument("--wandb_project", type=str, default="autoencoder")
+    argparser.add_argument("--wandb_entity", type=str, default="andrewbai")
+    argparser.add_argument("--primary_device", type=str, default="cuda:0")
+    argparser.add_argument("--offload_device", type=str, default="cpu")
+    argparser.add_argument("--perform_offloading", action="store_true", help="To be used when gpu memory is tight, \
+shuffles the encoder and buffer model back and forth from gpu to cpu to limit peak gpu memory usage")
 
-try:
-    prev_time = time.time()
-    for i in tqdm(range(num_activations // batch_size)):
-        # If offloading is enabled and the buffer needs to be refreshed, offload the encoder and its optimizer to the
-        # offload device to free up memory on the primary device, which is needed by the buffer to load the next batch
-        # of activations.
-        if perform_offloading and buffer.will_refresh(batch=batch_size):
-            encoder = encoder.to(offload_device)
-            optimizer_to(optimizer, offload_device)
-            torch.cuda.empty_cache()
-            acts = buffer.next(batch=batch_size).to(encoder_cfg.device, non_blocking=True)
-            encoder = encoder.to(primary_device)
-            optimizer_to(optimizer, primary_device)
-            gc.collect()
-        else:
-            acts = buffer.next(batch=batch_size).to(encoder_cfg.device, non_blocking=True)
+    args = argparser.parse_args()
 
-        # 0 in the second dimension since we are only using one layer
-        enc, loss, l1, mse = encoder(acts[:, 0, :])
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
-        if i % steps_per_report == 0 and i > 0:
-            freqs, avg_fired, fvu = encoder.get_data()
+    with open(args.model_cfg_yaml) as f:
+        model_cfg = yaml.safe_load(f)
+        args.model_cfg = Struct(**model_cfg)
 
-            wandb.log({
-                "l1": l1.item(),
-                "mse": mse.item(),
-                "total_loss": loss.item(),
-                "ms_per_act": 1000 * (time.time() - prev_time) / (batch_size * steps_per_report),
-                "avg_neurons_fired": avg_fired,
-                "lr": scheduler.get_last_lr()[0],
-                "feature_density": wandb.Histogram(freqs.log10().nan_to_num(neginf=-10).cpu()),
-            })
+    args.n_dim = get_activation_size(args.model_cfg.model_name, args.layer_loc)
+    print(f"infer act_size: {args.n_dim}")
+    args.m_dim = args.n_dim * args.expansion
+    args.total_steps = args.num_activations // args.batch_size
+    args.act_site = layer_loc_to_act_site(args.layer_loc)
+    print(f"infer act_site: {args.act_site}")
 
-            if i % steps_per_save == 0:
-                encoder.save("chk")
+    return args
 
-            torch.cuda.empty_cache()
-            prev_time = time.time()
-finally:
-    # Save the model
-    encoder.save("final")
+def main():
+    args = parse_args()
+
+    wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=args.wb_name, notes=args.wb_notes)
+
+    buffer_cfg = ActivationsBufferConfig(
+        model_name=args.model_cfg.model_name,
+        layers=args.layers,
+        act_site=args.act_site,
+        act_size=args.n_dim,
+        dataset_name=args.model_cfg.dataset_name,
+        dataset_split=args.model_cfg.dataset_split,
+        buffer_size=args.buffer_size,
+        device=args.primary_device,
+        buffer_device=args.offload_device,
+        offload_device=args.offload_device if args.perform_offloading else None,
+        shuffle_buffer=True,
+        model_batch_size=args.model_batch_size,
+        samples_per_seq=None,
+        max_seq_length=args.model_cfg.max_seq_length,
+    )
+    buffer = ActivationsBuffer(buffer_cfg)
+
+    encoder_cfg = AutoEncoderConfig(
+        n_dim=args.n_dim,
+        m_dim=args.m_dim,
+        device=args.primary_device,
+        lambda_reg=args.lambda_reg,
+        tied=False,
+        record_data=True,
+    )
+    encoder = AutoEncoder(encoder_cfg)
+
+    wandb.config.update({
+        "max_lr": args.lr,
+        "num_activations": args.num_activations,
+        "batch_size": args.batch_size,
+        "beta1": args.beta1,
+        "beta2": args.beta2,
+        "perform_offloading": args.perform_offloading,
+        "encoder": encoder_cfg.__dict__,
+        "buffer": buffer_cfg.__dict__,
+    })
+
+    optimizer = torch.optim.Adam(encoder.parameters(), lr=args.lr, betas=(args.beta1, args.beta2), foreach=False)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=args.lr,
+        total_steps=args.total_steps,
+        pct_start=0.1
+    )
+
+    try:
+        prev_time = time.time()
+        for i in trange(args.total_steps):
+            # If offloading is enabled and the buffer needs to be refreshed, offload the encoder and its optimizer to the
+            # offload device to free up memory on the primary device, which is needed by the buffer to load the next batch
+            # of activations.
+            if args.perform_offloading and buffer.will_refresh(batch=args.batch_size):
+                encoder = encoder.to(args.offload_device)
+                optimizer_to(optimizer, args.offload_device)
+                torch.cuda.empty_cache()
+                acts = buffer.next(batch=args.batch_size).to(encoder_cfg.device, non_blocking=True)
+                encoder = encoder.to(args.primary_device)
+                optimizer_to(optimizer, args.primary_device)
+                gc.collect()
+            else:
+                acts = buffer.next(batch=args.batch_size).to(encoder_cfg.device, non_blocking=True)
+
+            # 0 in the second dimension since we are only using one layer
+            enc, loss, l1, mse = encoder(acts[:, 0, :])
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            if i % args.steps_per_report == 0 and i > 0:
+                freqs, avg_fired, fvu = encoder.get_data()
+
+                wandb.log({
+                    "l1": l1.item(),
+                    "mse": mse.item(),
+                    "total_loss": loss.item(),
+                    "ms_per_act": 1000 * (time.time() - prev_time) / (args.batch_size * args.steps_per_report),
+                    "avg_neurons_fired": avg_fired,
+                    "lr": scheduler.get_last_lr()[0],
+                    "feature_density": wandb.Histogram(freqs.log10().nan_to_num(neginf=-10).cpu()),
+                })
+
+                if i % args.steps_per_save == 0:
+                    encoder.save("chk")
+
+                torch.cuda.empty_cache()
+                prev_time = time.time()
+    finally:
+        # Save the model
+        encoder.save("final")
+
+if __name__ == '__main__':
+    main()
+

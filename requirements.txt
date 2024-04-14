@@ -6,3 +6,4 @@ transformer_lens
 wandb
 argparse
 overrides
+pytest

@@ -1,0 +1,4 @@
+model_name: "meta-llama/Llama-2-7b-chat-hf"
+max_seq_length: 2048
+dataset_name: "NeelNanda/pile-10k"
+dataset_split: "train"

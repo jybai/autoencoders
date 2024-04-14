@@ -1,6 +1,12 @@
 import torch
 import torch.nn.functional as F
 
+class Struct:
+    """
+    https://stackoverflow.com/questions/6866600/how-to-parse-read-a-yaml-file-into-a-python-object
+    """
+    def __init__(self, **entries): 
+        self.__dict__.update(entries)
 
 class TiedLinear(torch.nn.Module):
     """

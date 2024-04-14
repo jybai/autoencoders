@@ -1,0 +1,4 @@
+model_name: "mistralai/Mistral-7B-Instruct-v0.1"
+max_seq_length: 2048
+dataset_name: "roneneldan/TinyStories"
+dataset_split: "train"

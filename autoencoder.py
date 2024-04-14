@@ -1,4 +1,5 @@
 import json
+import os
 import torch
 import torch.nn as nn
 from utils import TiedLinear
@@ -220,6 +221,7 @@ class AutoEncoder(nn.Module):
 
     def save(self, checkpoint):
         filename = f"{self.cfg.name}_{checkpoint}"
+        os.makedirs(self.cfg.save_dir, exist_ok=True)
         torch.save(self.state_dict(), f"{self.cfg.save_dir}/{filename}.pt")
         with open(f"{self.cfg.save_dir}/{self.cfg.name}_cfg.json", "w") as f:
             json.dump(self.cfg, f, cls=AutoEncoderConfigEncoder)
