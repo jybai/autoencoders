@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import torch
 from overrides import overrides
@@ -6,53 +6,21 @@ from overrides import overrides
 from autoencoder import *
 
 
+@dataclass
 class AutoEncoderMultiLayerConfig(AutoEncoderConfig):
-    def __init__(
-            self,
-            n_dim,
-            m_dim,
-            act_norms: List[float],
-            act_renorm_type: Literal["linear", "sqrt", "log", "none"],
-            act_renorm_scale: float,
-            tied=False,
-            seed=None,
-            device="cuda",
-            dtype=torch.bfloat16,
-            lambda_reg=0.001,
-            record_data=False,
-            num_firing_buckets=10,
-            firing_bucket_size=1000000,
-            name="multilayer_autoencoder",
-            save_dir="./weights",
-            **kwargs
-    ):
-        """
-        :param n_dim: the dimension of the input
-        :param m_dim: the dimension of the hidden layer
-        :param act_norms: the norms to use for layer activation renormalization
-        :param act_renorm_type: the type of renormalization to use for layer activations, one of "linear", "sqrt",
+    """The config for the `AutoEncoderMultiLayer` class
+
+    Args:
+        act_norms: the norms to use for layer activation renormalization, or the number of layers
+        act_renorm_type: the type of renormalization to use for layer activations, one of "linear", "sqrt",
             "log", "none". Activations are scaled by act_renorm_scale*(avg(norms)/norms[layer]), where norms are the
             result of the act_renorm_type applied to act_norms
-        :param act_renorm_scale: a global scale to apply to all activations after renormalization
-        :param tied: if True, the decoder weights are tied to the encoder weights
-        :param seed: the seed to use for pytorch rng
-        :param device: the device to use for the model
-        :param dtype: the dtype to use for the model
-        :param lambda_reg: the regularization strength
-        :param record_data: if True, a variety of data will be recorded during on forward passes, including neuron
-        firing frequencies and the average FVU
-        :param num_firing_buckets: the number of buckets to use for recording neuron firing
-        :param firing_bucket_size: the size of each bucket for recording neuron firing
-        :param name: the name to use when saving the model
-        :param save_dir: the directory to save the model to
+        act_renorm_scale: a global scale to apply to all activations after renormalization
         """
-
-        super().__init__(n_dim, m_dim, tied, seed, device, dtype, lambda_reg, record_data, num_firing_buckets,
-                         firing_bucket_size, name, save_dir, **kwargs)
-
-        self.act_norms = act_norms
-        self.act_renorm_type = act_renorm_type
-        self.act_renorm_scale = act_renorm_scale
+    act_norms: Union[List[float], int] = 1
+    act_renorm_type: Literal["linear", "sqrt", "log", "none"] = "linear"
+    act_renorm_scale: float = 1.0
+    name = "multilayer_autoencoder"
 
 
 # Custom JSON encoder and decoder for AutoEncoderMultiLayerConfig, as torch.dtype is not serializable by default
@@ -83,11 +51,13 @@ class AutoEncoderMultiLayer(AutoEncoder):
     """
 
     def __init__(self, cfg: AutoEncoderMultiLayerConfig):
+        self.num_layers = len(cfg.act_norms) if isinstance(cfg.act_norms, list) else cfg.act_norms
+
         super().__init__(cfg)
 
-        if cfg.act_renorm_type == "none":
+        if cfg.act_renorm_type == "none" or cfg.act_norms is int:
             # no renormalization
-            norms = torch.ones(len(cfg.act_norms))
+            norms = torch.ones(self.num_layers)
         elif cfg.act_renorm_type == "linear":
             norms = torch.Tensor(cfg.act_norms)
         elif cfg.act_renorm_type == "sqrt":
@@ -97,32 +67,45 @@ class AutoEncoderMultiLayer(AutoEncoder):
         else:
             raise ValueError(f"Invalid act_renorm_type {cfg.act_renorm_type}")
 
-        self.register_buffer("act_scales", cfg.act_renorm_scale * norms.mean() / norms)
+        self.register_buffer("act_scales", (cfg.act_renorm_scale * norms.mean() / norms).to(cfg.device, cfg.dtype))
 
     @overrides
-    def forward(self, x, layer: Optional[int] = None):
-        encoded = self.encode(x, layer)
-        reconstructed = self.decode(encoded, layer)
-        loss, l1, mse = self.loss(x, reconstructed, encoded, self.cfg.lambda_reg)
-
-        if self.cfg.record_data:
-            self.record_fvu_data(x, mse)
-
-        return encoded, loss, l1, mse
-
-    @overrides
-    def encode(self, x, layer: Optional[int] = None):
-        if layer is not None:
+    def encode(self, x, record=True, layer: Optional[int] = None):
+        # A layer should only be specified if x is a single layer
+        if layer is not None:  # x: [batch_size, n_dim]
             x = x * self.act_scales[layer]
+        else:  # x: [batch_size, num_layers, n_dim]
+            x = torch.einsum("bln,l->bln", x, self.act_scales)
 
-        return super().encode(x)
+        return super().encode(x, record=record and (layer is None))
 
     @overrides
     def decode(self, x, layer: Optional[int] = None):
-        if layer is not None:
+        # A layer should only be specified if x is a single layer
+        if layer is not None:  # x: [batch_size, n_dim]
             x = x / self.act_scales[layer]
+        else:  # x: [batch_size, num_layers, n_dim]
+            x = torch.einsum("bln,l->bln", x, 1 / self.act_scales)
 
         return super().decode(x)
+
+    def register_data_buffers(self, cfg):
+        # Bucketed rolling avg. for memory efficiency
+        self.register_buffer("num_encodes", torch.zeros(cfg.num_firing_buckets, device=cfg.device, dtype=torch.int32),
+                             persistent=False)
+        self.register_buffer("neuron_firings",
+                             torch.zeros(cfg.num_firing_buckets, self.num_layers, cfg.m_dim, device=cfg.device,
+                                         dtype=torch.int32),
+                             persistent=False)
+
+        self.register_buffer("num_forward_passes", torch.tensor(0, device=cfg.device, dtype=torch.int32),
+                             persistent=False)
+        self.register_buffer("mse_ema", torch.zeros(self.num_layers, device=cfg.device),
+                             persistent=False)
+        self.register_buffer("input_avg", torch.zeros(self.num_layers, cfg.n_dim, device=cfg.device),
+                             persistent=False)
+        self.register_buffer("input_var", torch.zeros(self.num_layers, cfg.n_dim, device=cfg.device),
+                             persistent=False)
 
     def save(self, checkpoint):
         filename = f"{self.cfg.name}_{checkpoint}"
@@ -139,4 +122,3 @@ class AutoEncoderMultiLayer(AutoEncoder):
         model.load_state_dict(torch.load(filename))
         print(f"Loaded model from {filename}")
         return model
-
