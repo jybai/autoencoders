@@ -4,13 +4,16 @@ import torch
 import wandb
 from transformer_lens.loading_from_pretrained import convert_hf_model_config
 from autoencoder import *
-from buffer import ActivationsBuffer, ActivationsBufferConfig
+# from buffer import ActivationsBuffer, ActivationsBufferConfig
+from buffer import CachedActivationsBuffer as ActivationsBuffer
+from buffer import CachedActivationsBufferConfig as ActivationsBufferConfig
 import time
 from tqdm.auto import tqdm, trange
 from utils import *
 import argparse
 import gc
 import yaml
+import os
 
 def get_activation_size(model_name: str, layer_loc: str):
     assert layer_loc in [
@@ -63,6 +66,8 @@ def layer_loc_to_act_site(layer_loc):
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--model_cfg_yaml", type=str)
+    argparser.add_argument("--acts_cache_dir", type=str)
+    argparser.add_argument("--model_save_dir", type=str)
     argparser.add_argument("--layers", type=int, nargs='+', default=[0])
     argparser.add_argument("--layer_loc", type=str, default="mlpout", 
                            choices=["residual", "mlp", "attn", "attn_concat", "mlpout"])
@@ -91,6 +96,8 @@ def parse_args():
     argparser.add_argument("--offload_device", type=str, default="cpu")
     argparser.add_argument("--perform_offloading", action="store_true", help="To be used when gpu memory is tight, \
 shuffles the encoder and buffer model back and forth from gpu to cpu to limit peak gpu memory usage")
+
+    argparser.add_argument("--refresh_progress", action="store_true")
 
     args = argparser.parse_args()
 
@@ -127,9 +134,12 @@ def main():
         model_batch_size=args.model_batch_size,
         samples_per_seq=None,
         max_seq_length=args.model_cfg.max_seq_length,
+        cache_dir=args.acts_cache_dir,
+        refresh_progress=args.refresh_progress,
     )
     buffer = ActivationsBuffer(buffer_cfg)
 
+    os.makedirs(args.model_save_dir, exist_ok=True)
     encoder_cfg = AutoEncoderConfig(
         n_dim=args.n_dim,
         m_dim=args.m_dim,
@@ -137,6 +147,7 @@ def main():
         lambda_reg=args.lambda_reg,
         tied=False,
         record_data=True,
+        save_dir=args.model_save_dir,
     )
     encoder = AutoEncoder(encoder_cfg)
 

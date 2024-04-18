@@ -1,9 +1,10 @@
 import torch
 import datasets
 from transformer_lens import HookedTransformer
-from tqdm.autonotebook import tqdm
+from tqdm.auto import tqdm, trange
 import gc
-
+import os
+from glob import glob
 
 class ActivationsBufferConfig:
     def __init__(
@@ -75,6 +76,12 @@ class ActivationsBufferConfig:
         self.refresh_progress = refresh_progress
         self.final_layer = max(layers)  # the final layer that needs to be run
 
+
+class CachedActivationsBufferConfig(ActivationsBufferConfig):
+    def __init__(self, cache_dir, *args, n_acts_per_block=8192, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cache_dir = cache_dir
+        self.n_acts_per_block = n_acts_per_block
 
 class ActivationsBuffer:
     """
@@ -247,3 +254,143 @@ class ActivationsBuffer:
 
     def will_refresh(self, batch: int = None):
         return self.cfg.buffer_size - (self.buffer_pointer + (batch or 1)) < self.cfg.min_capacity
+
+class CachedActivationsBuffer(ActivationsBuffer):
+    def __init__(self, cfg: CachedActivationsBufferConfig, hf_model=None):
+        self.block_pointer = 0
+        self.n_blocks = 0
+        self.block_acts = []
+        self.remaining_buffer = 0
+        super().__init__(cfg, hf_model)
+
+    @torch.no_grad()
+    def next(self, batch: int = None):
+        # lazy-sync the buffer to ensure async copies are complete
+        if self.buffer_pointer >= self.remaining_buffer:
+            torch.cuda.synchronize()
+            self.remaining_buffer = float('inf')
+
+        # if this batch read would take us below the min_capacity, refresh the buffer
+        if self.will_refresh(batch):
+            self.refresh()
+
+        if batch is None:
+            out = self.buffer[self.buffer_pointer]
+        else:
+            out = self.buffer[self.buffer_pointer:self.buffer_pointer + batch]
+
+        self.buffer_pointer += batch or 1
+
+        return out
+
+    @torch.no_grad()
+    def refresh(self):
+        if self.n_blocks == 0:
+            self.cache_activations()
+
+        # record remaining buffers
+        self.remaining_buffer = self.buffer_pointer
+
+        # shift the remaining activations to the start of the buffer
+        self.buffer = torch.roll(self.buffer, -self.buffer_pointer, 0)
+
+        # start a progress bar if `refresh_progress` is enabled
+        if self.cfg.refresh_progress:
+            pbar = tqdm(total=self.buffer_pointer)
+
+        # fill the rest of the buffer with `buffer_pointer` new activations from the model
+        while self.buffer_pointer > 0:
+            # get the next batch of seqs
+            # acts = torch.load(os.path.join(self.cfg.cache_dir, f"block{self.block_pointer}.pt"))
+            acts = self.block_acts[self.block_pointer]
+            # acts = acts.to(self.cfg.buffer_device, non_blocking=True)
+            self.block_pointer += 1
+            self.block_pointer %= self.n_blocks
+
+            write_pointer = self.cfg.buffer_size - self.buffer_pointer
+
+            new_acts = min(acts.shape[0], self.buffer_pointer)  # the number of acts to write, capped by buffer_pointer
+            self.buffer[write_pointer:write_pointer + acts.shape[0]].copy_(acts[:new_acts], non_blocking=True)
+            del acts
+
+            # update the buffer pointer by the number of activations we just added
+            self.buffer_pointer -= new_acts
+
+            # update the progress bar
+            if self.cfg.refresh_progress:
+                pbar.update(new_acts)
+
+        # close the progress bar
+        if self.cfg.refresh_progress:
+            pbar.close()
+
+        # sync the buffer to ensure async copies are complete
+        # torch.cuda.synchronize()
+
+        # if shuffle_buffer is enabled, shuffle the buffer
+        # if self.cfg.shuffle_buffer:
+        #     self.buffer = self.buffer[torch.randperm(self.cfg.buffer_size)]
+
+        # if offloading is enabled, move the model back to `cfg.offload_device`, and clear the cache
+        if self.cfg.offload_device:
+            self.model.to(self.cfg.offload_device)
+            torch.cuda.empty_cache()
+
+        gc.collect()
+
+        assert self.buffer_pointer == 0, "Buffer pointer should be 0 after refresh"
+
+    def cache_activations(self):
+
+        if not os.path.isdir(self.cfg.cache_dir):
+            os.makedirs(self.cfg.cache_dir)
+
+            block_acts = []
+            n_acts = 0
+
+            for seqs in tqdm(self.data_generator, desc="Caching activations: "):
+
+                if self.cfg.max_seq_length:
+                    for i in range(len(seqs)):
+                        seqs[i] = seqs[i][:self.cfg.max_seq_length]
+
+                # run the seqs through the model to get the activations
+                out, cache = self.model.run_with_cache(seqs, stop_at_layer=self.cfg.final_layer + 1,
+                                                       names_filter=self.cfg.act_names)
+
+                # clean up logits in order to free the graph memory
+                del out
+                torch.cuda.empty_cache()
+
+                # store the activations in the buffer
+                acts = torch.stack([cache[name] for name in self.cfg.act_names], dim=-2)
+                # (batch, pos, layers, act_size) -> (batch*samples_per_seq, layers, act_size)
+                if self.cfg.samples_per_seq:
+                    acts = acts[:, torch.randperm(acts.shape[-3])[:self.cfg.samples_per_seq]].flatten(0, 1)
+                else:
+                    acts = acts.flatten(0, 1)
+
+                block_acts.append(acts.detach().cpu())
+                n_acts += acts.shape[0]
+
+                if n_acts >= self.cfg.n_acts_per_block:
+                    block_acts = torch.concat(block_acts, dim=0)
+                    torch.save(block_acts[:self.cfg.n_acts_per_block], os.path.join(self.cfg.cache_dir, f"block{self.n_blocks}.pt"))
+
+                    n_acts = block_acts[self.cfg.n_acts_per_block:].shape[0]
+                    block_acts = [block_acts[self.cfg.n_acts_per_block:]]
+                    self.n_blocks += 1
+
+                torch.cuda.empty_cache()
+
+            self.model.to(self.cfg.offload_device)
+            torch.cuda.empty_cache()
+
+        assert os.path.isdir(self.cfg.cache_dir)
+            # print(f"cache_dir already exists in {self.cfg.cache_dir}.")
+        self.n_blocks = len(glob(os.path.join(self.cfg.cache_dir, "*.pt")))
+        for i in trange(self.n_blocks, desc="Loading blocks: "):
+            _block = torch.load(os.path.join(self.cfg.cache_dir, f"block{i}.pt")).pin_memory()
+            self.block_acts.append(_block)
+        assert self.n_blocks > 0
+
