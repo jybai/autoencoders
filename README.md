@@ -28,5 +28,6 @@ CUDA_VISIBLE_DEVICES="0" TOKENIZERS_PARALLELISM="false" python sweep.py --model_
   --layer 16 --layer_loc residual --lr 1e-4 1e-5 --lambda_reg 1e-1 1e-2 --parallelism 4 \
   --batch_size 1024 --model_batch_size 8 --acts_cache_dir [ACTIVATION_CACHE_DIR] 
 ```
-This command sweeps learning rates of {1e-4, 1e-5} and sparsity regulariations of {1e-1, 1e-2}. Sweepables parameters include `lr`, `beta1`, `beta2`, `lambda_reg`, `warmup_percent`, `act_renorm_type`, and `act_renorm_scale`.
-Currently models are not saved during hyperparameter sweep.
+This command sweeps learning rates of {1e-4, 1e-5} and sparsity regulariations of {1e-1, 1e-2}. 
+Sweepable parameters include `lr`, `beta1`, `beta2`, `lambda_reg`, `warmup_percent`, `act_renorm_type`, and `act_renorm_scale`.
+See details in `sweep.py`.

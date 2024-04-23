@@ -36,6 +36,7 @@ class AutoEncoderConfig:
     dtype: torch.dtype = torch.bfloat16
     lambda_reg: float = 0.001
     record_data: bool = True
+    save_model: bool = True
     num_firing_buckets: int = 16
     firing_bucket_size: int = 2 ** 18
     name: str = "autoencoder"
@@ -287,11 +288,17 @@ class AutoEncoder(nn.Module):
 
         return freqs, avg_fired, avg_fvu
 
-    def save(self, checkpoint):
-        filename = f"{self.cfg.name}_{checkpoint}"
-        os.makedirs(self.cfg.save_dir, exist_ok=True)
-        torch.save(self.state_dict(), f"{self.cfg.save_dir}/{filename}.pt")
-        with open(f"{self.cfg.save_dir}/{self.cfg.name}_cfg.json", "w") as f:
+    def save(self, checkpoint="chk", save_dir=None, filename=None):
+        if filename is None:
+            assert self.cfg.name is not None
+            filename = self.cfg.name
+        if save_dir is None:
+            assert self.cfg.save_dir is not None
+            save_dir = self.cfg.save_dir
+        
+        os.makedirs(save_dir, exist_ok=True)
+        torch.save(self.state_dict(), os.path.join(save_dir, f"{filename}_{checkpoint}.pt"))
+        with open(os.path.join(save_dir, f"{self.cfg.name}_cfg.json"), "w") as f:
             json.dump(self.cfg, f, cls=AutoEncoderConfigEncoder)
 
     @classmethod

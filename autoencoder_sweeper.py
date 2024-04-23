@@ -59,6 +59,7 @@ class AutoEncoderSweeperConfig:
     wb_entity: str
     wb_group: Optional[str] = None
     wb_config: Optional[dict] = None
+    run_name: str = "sae"
     dtype: torch.dtype = torch.bfloat16
     device: str = "cuda"
     total_activations: int = int(2e7)
@@ -85,6 +86,7 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_qu
             dtype=cfg.dtype,
             lambda_reg=sweep_cfg["lambda_reg"],
             record_data=True,
+            save_model=True,
         )
 
         trainer_cfg = AutoEncoderMultiLayerTrainerConfig(
@@ -119,6 +121,7 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_qu
             dtype=cfg.dtype,
             lambda_reg=sweep_cfg["lambda_reg"],
             record_data=True,
+            save_model=True,
         )
 
         trainer_cfg = AutoEncoderTrainerConfig(
@@ -232,7 +235,7 @@ class AutoEncoderSweeper:
 
             active_sweep_cfgs = self.sweep_cfgs[i:i + self.cfg.parallelism]
 
-            # BUG: when spawning fails, the error is not propagated to the main process bc train_workers is only joined in line 269 but main blocks at line 255. current hack is to set join=True when debugging.
+            # BUG: when spawning fails, the error is not propagated to the main process bc train_workers is only joined in line 267 but main blocks at line 253. current hack is to set join=True when debugging.
             trainer_workers = spawn(
                 create_trainer_worker,
                 nprocs=num_trainers,

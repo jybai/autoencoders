@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
+import os
 
 import torch.optim.lr_scheduler
 import wandb
@@ -108,5 +109,8 @@ class AutoEncoderTrainer:
                 "avg_l0": avg_l0,
                 "avg_fvu": avg_fvu
             })
+
+        if self.encoder.cfg.save_model:
+            self.encoder.save(save_dir=wandb.run.dir, filename='autoencoder')
 
         wandb.finish()
