@@ -4,7 +4,7 @@ from typing import List, Optional, Literal
 from autoencoder_trainer import *
 from autoencoder_multilayer_trainer import *
 from buffer import *
-from tqdm.autonotebook import tqdm
+from tqdm.auto import tqdm, trange
 from utils import *
 import gc
 import torch.multiprocessing
@@ -69,6 +69,7 @@ class AutoEncoderSweeperConfig:
 
 def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_queues: list[Queue],
                           cfg: AutoEncoderSweeperConfig):
+    
     sweep_cfg = sweep_cfgs[pidx]
     act_queue = act_queues[pidx]
 
@@ -145,11 +146,10 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_qu
         )
 
         trainer = AutoEncoderTrainer(encoder_cfg, trainer_cfg)
-
+    
     try:
         while True:
             acts = act_queue.get(block=True, timeout=None)
-
             if acts is None:
                 break
 
@@ -227,18 +227,20 @@ class AutoEncoderSweeper:
             print(f"Running configs {i + 1} to {i + num_trainers} of {len(self.sweep_cfgs)}")
 
             # reset buffer
-            self.buffer.reset_dataset()
+            if i > 0:
+                self.buffer.reset_dataset()
 
             active_sweep_cfgs = self.sweep_cfgs[i:i + self.cfg.parallelism]
 
+            # BUG: when spawning fails, the error is not propagated to the main process bc train_workers is only joined in line 269 but main blocks at line 255. current hack is to set join=True when debugging.
             trainer_workers = spawn(
                 create_trainer_worker,
                 nprocs=num_trainers,
                 args=(i + 1, active_sweep_cfgs, queues, self.cfg),
-                join=False
+                join=False,
             )
 
-            for _ in tqdm(range(self.cfg.total_activations // self.cfg.batch_size)):
+            for j in trange(self.cfg.total_activations // self.cfg.batch_size):
                 acts = self.buffer.next(batch=self.cfg.batch_size)
                 acts = acts.to(self.cfg.device, dtype=self.cfg.dtype)
 
@@ -247,12 +249,15 @@ class AutoEncoderSweeper:
                 for q in queues:
                     q.join()
 
-                for j, q in enumerate(queues):
+                for k, q in enumerate(queues):
+                    q.put(acts[:, 0, :])
+                    # print(f"{k} puts")
+                    """ TODO: not sure why the condition here. remove for now.
                     if self.cfg.act_norms is not None:
                         q.put(acts)
                     else:
-                        q.put(acts[:, active_sweep_cfgs[j]["layer"], :])
-
+                        q.put(acts[:, active_sweep_cfgs[k]["layer"], :])
+                    """
             for q in queues:
                 q.put(None)
 

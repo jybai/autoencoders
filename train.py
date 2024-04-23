@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 import wandb
-from transformer_lens.loading_from_pretrained import convert_hf_model_config
 from autoencoder import *
 # from buffer import ActivationsBuffer, ActivationsBufferConfig
 from buffer import CachedActivationsBuffer as ActivationsBuffer
@@ -14,54 +13,6 @@ import argparse
 import gc
 import yaml
 import os
-
-def get_activation_size(model_name: str, layer_loc: str):
-    assert layer_loc in [
-        "residual",
-        "mlp",
-        "attn",
-        "attn_concat",
-        "mlpout",
-    ], f"Layer location {layer_loc} not supported"
-    model_cfg = convert_hf_model_config(model_name)
-
-    if layer_loc == "residual":
-        return model_cfg["d_model"]
-    elif layer_loc == "mlp":
-        return model_cfg["d_mlp"]
-    elif layer_loc == "attn":
-        return model_cfg["d_head"] * model_cfg["n_heads"]
-    elif layer_loc == "mlpout":
-        return model_cfg["d_model"]
-    elif layer_loc == "attn_concat":
-        return model_cfg["d_head"] * model_cfg["n_heads"]
-    else:
-        return None
-
-def layer_loc_to_act_site(layer_loc):
-    '''
-    https://github.com/chepingt/sparse_dictionary/blob/717636e9870656811b307c308e860cbf4e585198/sae_utils/activation_dataset.py#L69
-    '''
-    assert layer_loc in [
-        "residual",
-        "mlp",
-        "attn",
-        "attn_concat",
-        "mlpout",
-    ], f"Layer location {layer_loc} not supported"
-
-    if layer_loc == "residual":
-        return "hook_resid_post"
-    elif layer_loc == "attn_concat":
-        return "attn.hook_z"
-    elif layer_loc == "mlp":
-        return "mlp.hook_post"
-    elif layer_loc == "attn":
-        return "hook_resid_post"
-    elif layer_loc == "mlpout":
-        return "hook_mlp_out"
-    else:
-        return None
 
 def parse_args():
     argparser = argparse.ArgumentParser()

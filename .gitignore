@@ -4,3 +4,4 @@ wandb/
 weights/
 scratchpad.ipynb
 *.un~
+*.ipynb_checkpoints/

@@ -105,7 +105,7 @@ class AutoEncoder(nn.Module):
     def encode(self, x, record=True):
         x = x - self.pre_encoder_bias
         x = self.relu(self.encoder(x) + self.pre_activation_bias)
-
+        
         if self.cfg.record_data and record:
             self.record_firing_data(x)
 

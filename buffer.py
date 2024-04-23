@@ -1,5 +1,6 @@
 import torch
 import datasets
+from multiprocessing import Pool
 from transformer_lens import HookedTransformer
 from tqdm.auto import tqdm, trange
 import gc
@@ -84,10 +85,11 @@ class ActivationsBufferConfig:
 
 
 class CachedActivationsBufferConfig(ActivationsBufferConfig):
-    def __init__(self, cache_dir, *args, n_acts_per_block=8192, **kwargs):
+    def __init__(self, cache_dir, *args, n_acts_per_block=8192, n_threads=16, **kwargs):
         super().__init__(*args, **kwargs)
         self.cache_dir = cache_dir
         self.n_acts_per_block = n_acts_per_block
+        self.n_threads = n_threads
 
 class ActivationsBuffer:
     """
@@ -397,10 +399,22 @@ class CachedActivationsBuffer(ActivationsBuffer):
             torch.cuda.empty_cache()
 
         assert os.path.isdir(self.cfg.cache_dir)
-            # print(f"cache_dir already exists in {self.cfg.cache_dir}.")
         self.n_blocks = len(glob(os.path.join(self.cfg.cache_dir, "*.pt")))
-        for i in trange(self.n_blocks, desc="Loading blocks: "):
-            _block = torch.load(os.path.join(self.cfg.cache_dir, f"block{i}.pt")).pin_memory()
-            self.block_acts.append(_block)
+        self.reset_dataset()
+        
         assert self.n_blocks > 0
+        assert self.n_blocks == len(self.block_acts)
 
+    def reset_dataset(self):
+        """
+        Reset the buffer to the beginning of the dataset without reshuffling.
+        """
+        with Pool(processes=self.cfg.n_threads) as pool:
+            self.block_acts = pool.map(torch.load, [os.path.join(self.cfg.cache_dir, f"block{i}.pt") for i in range(self.n_blocks)])
+        for i in range(self.n_blocks):
+            self.block_acts[i].pin_memory()
+
+        # blocking load
+        # for i in trange(self.n_blocks, desc="Loading blocks: "):
+        #    _block = torch.load(os.path.join(self.cfg.cache_dir, f"block{i}.pt")).pin_memory()
+        #    self.block_acts.append(_block)
