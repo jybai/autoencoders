@@ -72,6 +72,8 @@ class AutoEncoderTrainer:
             settings=wandb.Settings(disable_job_creation=True)
         )
 
+        wandb.watch(self.encoder, log_freq=self.cfg.steps_per_report, log="gradients")
+
     def train_on(self, acts):
         enc, loss, l1, mse = self.encoder(acts)
         loss.backward()
