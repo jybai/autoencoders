@@ -45,7 +45,7 @@ class AutoEncoderSweeperConfig:
     act_renorm_scale: a global scale to apply to all activations after renormalization. Only used if act_norms is set
     """
     n_dim: int
-    m_dim: int
+    m_dim: List[int]
     lr: List[float]
     beta1: List[float]
     beta2: List[float]
@@ -68,7 +68,7 @@ class AutoEncoderSweeperConfig:
     steps_per_report: int = 100
 
 
-def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_queues: list[Queue],
+def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: List[dict], act_queues: List[Queue],
                           cfg: AutoEncoderSweeperConfig):
     
     sweep_cfg = sweep_cfgs[pidx]
@@ -78,7 +78,7 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_qu
         # multi-layer autoencoder
         encoder_cfg = AutoEncoderMultiLayerConfig(
             n_dim=cfg.n_dim,
-            m_dim=cfg.m_dim,
+            m_dim=sweep_cfg["m_dim"],
             act_norms=cfg.act_norms,
             act_renorm_type=sweep_cfg["act_renorm_type"],
             act_renorm_scale=sweep_cfg["act_renorm_scale"],
@@ -116,7 +116,7 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: list[dict], act_qu
         # single-layer autoencoder
         encoder_cfg = AutoEncoderConfig(
             n_dim=cfg.n_dim,
-            m_dim=cfg.m_dim,
+            m_dim=sweep_cfg["m_dim"],
             device=cfg.device,
             dtype=cfg.dtype,
             lambda_reg=sweep_cfg["lambda_reg"],
@@ -184,6 +184,7 @@ class AutoEncoderSweeper:
                     "warmup_percent": warmup_percent,
                     "act_renorm_type": act_renorm_type,
                     "act_renorm_scale": act_renorm_scale,
+                    "m_dim": m_dim,
                 }
                 for lr in cfg.lr
                 for beta1 in cfg.beta1
@@ -192,6 +193,7 @@ class AutoEncoderSweeper:
                 for warmup_percent in cfg.warmup_percent
                 for act_renorm_type in cfg.act_renorm_type
                 for act_renorm_scale in cfg.act_renorm_scale
+                for m_dim in cfg.m_dim
             ]
 
         else:
@@ -203,6 +205,7 @@ class AutoEncoderSweeper:
                     "beta2": beta2,
                     "lambda_reg": lambda_reg,
                     "warmup_percent": warmup_percent,
+                    "m_dim": m_dim,
                     "layer": layer,
                 }
                 for lr in cfg.lr
@@ -210,6 +213,7 @@ class AutoEncoderSweeper:
                 for beta2 in cfg.beta2
                 for lambda_reg in cfg.lambda_reg
                 for warmup_percent in cfg.warmup_percent
+                for m_dim in cfg.m_dim
                 for layer in cfg.layer  # layer is last so that it is always iterated over in adjacent cfgs, this speeds
                 # up the sweep since the full set activations from the model can always be used
             ]

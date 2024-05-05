@@ -39,8 +39,8 @@ def parse_args():
     argparser.add_argument("--expansion", type=int, default=4)
     # argparser.add_argument("--n_dim", type=int, default=4096) # TODO: automatically infer n_dim given the selected layer from the model
 
-    argparser.add_argument("--wb_name", type=Optional[str], default=None)
-    argparser.add_argument("--wb_notes", type=Optional[str], default=None)
+    argparser.add_argument("--wb_name", type=str, default=None)
+    argparser.add_argument("--wb_notes", type=str, default=None)
     argparser.add_argument("--wandb_project", type=str, default="autoencoder")
     argparser.add_argument("--wandb_entity", type=str, default="andrewbai")
     argparser.add_argument("--primary_device", type=str, default="cuda:0")

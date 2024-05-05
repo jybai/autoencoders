@@ -22,10 +22,10 @@ def parse_args():
     argparser.add_argument("--parallelism", type=int, default=8)
 
     # sweepable hparams configs
-    argparser.add_argument("--lr", type=float, nargs='+', default=[1e-4])
-    argparser.add_argument("--beta1", type=float, nargs='+', default=[0])
+    argparser.add_argument("--lr", type=float, nargs='+', default=[5e-5])
+    argparser.add_argument("--beta1", type=float, nargs='+', default=[0.9])
     argparser.add_argument("--beta2", type=float, nargs='+', default=[0.999])
-    argparser.add_argument("--lambda_reg", type=float, nargs='+', default=[1e-3])
+    argparser.add_argument("--lambda_reg", type=float, nargs='+', default=[5])
     argparser.add_argument("--warmup_percent", type=float, nargs='+', default=[0.3], help="Passed to pct_start in torch.optim.lr_scheduler.OneCycleLR.")
     
     # activation normalization configs
@@ -38,11 +38,11 @@ def parse_args():
     argparser.add_argument("--act_renorm_scale", type=float, nargs='+', default=None, help="""a global scale to apply to all 
                            activations after renormalization. Only used if act_norms is set""")
 
-    argparser.add_argument("--expansion", type=int, default=4)
-    argparser.add_argument("--num_activations", type=int, default=int(2e7), 
+    argparser.add_argument("--expansion", type=int, nargs='+', default=[16])
+    argparser.add_argument("--num_activations", type=int, default=int(2 ** 27), 
                            help="total number of tokens to train on, the dataset will wrap around as needed")
     argparser.add_argument("--model_batch_size", type=int, default=16)
-    argparser.add_argument("--batch_size", type=int, default=1024)
+    argparser.add_argument("--batch_size", type=int, default=2048)
     argparser.add_argument("--buffer_size", type=int, default=int(2 ** 20))
 
     argparser.add_argument("--steps_per_report", type=int, default=100)
@@ -67,7 +67,7 @@ def parse_args():
 
     args.n_dim = get_activation_size(args.model_cfg.model_name, args.layer_loc)
     print(f"infer act_size: {args.n_dim}")
-    args.m_dim = args.n_dim * args.expansion
+    args.m_dim = [args.n_dim * r for r in args.expansion]
     args.total_steps = args.num_activations // args.batch_size
     args.act_site = layer_loc_to_act_site(args.layer_loc)
     print(f"infer act_site: {args.act_site}")

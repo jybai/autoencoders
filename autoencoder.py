@@ -116,8 +116,10 @@ class AutoEncoder(nn.Module):
         return self.decoder(x) + self.pre_encoder_bias
 
     def loss(self, x, x_out, latent, lambda_reg, mean_over_batch=True):
-        l1 = self.normalized_l1(x, latent, mean_over_batch=mean_over_batch)
-        mse = self.normalized_reconstruction_mse(x, x_out, mean_over_batch=mean_over_batch)
+        #l1 = self.normalized_l1(x, latent, mean_over_batch=mean_over_batch)
+        l1 = self.normalized_l1_v2(self.decoder.weight, latent, mean_over_batch=mean_over_batch)
+        #mse = self.normalized_reconstruction_mse(x, x_out, mean_over_batch=mean_over_batch)
+        mse = self.reconstruction_mse(x, x_out, mean_over_batch=mean_over_batch)
         total = (lambda_reg * l1) + mse
 
         return total, l1, mse
@@ -153,6 +155,22 @@ class AutoEncoder(nn.Module):
         """
         mse = ((x - recons) ** 2).mean(dim=-1) / (x ** 2).mean(dim=-1)
         return mse.mean(dim=0) if mean_over_batch else mse
+    
+    @staticmethod
+    def reconstruction_mse(x, recons, mean_over_batch=True):
+        """
+        The MSE between the input and its reconstruction, normalized by the mean square of the input, averaged over the
+        batch.
+
+        [n_dim]*2 -> []
+        Or
+        [batch, n_dim]*2 -> []
+        Or
+        [batch, layer, n_dim]*2 -> [layer]
+        """
+        mse = ((x - recons) ** 2).mean(dim=-1) 
+        return mse.mean(dim=0) if mean_over_batch else mse
+
 
     @staticmethod
     def normalized_l1(x, latent, mean_over_batch=True):
@@ -166,6 +184,17 @@ class AutoEncoder(nn.Module):
         [batch, layer, n_dim], [batch, layer, m_dim] -> [layer]
         """
         l1 = latent.norm(dim=-1, p=1) / x.norm(dim=-1, p=2)
+        return l1.mean(dim=0) if mean_over_batch else l1
+    
+    @staticmethod
+    def normalized_l1_v2(decoder_weight, latent, mean_over_batch=True):
+        """
+        Anthropic's method for calculating the L1 norm of the latent representation, multiplying the L2 norm of the decoder weight
+        decoder_weight: [m_dim, n_dim]
+        latent: [batch, m_dim]
+        """
+        l1 = torch.abs(latent) @ decoder_weight.norm(dim=0, p=2).reshape(-1,1)
+        l1 = l1.reshape(-1)
         return l1.mean(dim=0) if mean_over_batch else l1
 
     def resample_neurons(self, inputs, batch_size, optimizer):
