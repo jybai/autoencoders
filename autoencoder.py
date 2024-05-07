@@ -168,7 +168,7 @@ class AutoEncoder(nn.Module):
         Or
         [batch, layer, n_dim]*2 -> [layer]
         """
-        mse = ((x - recons) ** 2).mean(dim=-1) 
+        mse = ((x - recons) ** 2).sum(dim=-1)
         return mse.mean(dim=0) if mean_over_batch else mse
 
 

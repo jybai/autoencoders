@@ -132,7 +132,7 @@ def create_trainer_worker(pidx: int, offset: int, sweep_cfgs: List[dict], act_qu
             warmup_percent=sweep_cfg["warmup_percent"],
             wb_project=cfg.wb_project,
             wb_entity=cfg.wb_entity,
-            wb_name="{}: L{}_R{:.1e}_LR={:.1e}_hidden_dim_{:.1e}".format(
+            wb_name="{}: L{}_R{:.1e}_LR={:.1e}_hidden_dim_{:.1e}_sum_loss".format(
                 offset + pidx,
                 sweep_cfg["layer"],
                 sweep_cfg["lambda_reg"],
