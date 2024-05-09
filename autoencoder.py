@@ -65,6 +65,7 @@ class AutoEncoderConfigDecoder(json.JSONDecoder):
         return AutoEncoderConfig(**d)
 
 
+
 class AutoEncoder(nn.Module):
     """
     Autoencoder model with a single hidden layer
@@ -78,10 +79,10 @@ class AutoEncoder(nn.Module):
         if cfg.seed:
             torch.manual_seed(cfg.seed)
 
-        self.pre_encoder_bias = nn.Parameter(torch.zeros(cfg.n_dim, device=cfg.device, dtype=cfg.dtype))
+        self.encoder_bias = nn.Parameter(torch.zeros(cfg.m_dim, device=cfg.device, dtype=cfg.dtype))
         # encoder linear layer, goes from the models embedding space to the hidden layer
         self.encoder = nn.Linear(cfg.n_dim, cfg.m_dim, bias=False, device=cfg.device, dtype=cfg.dtype)
-        self.pre_activation_bias = nn.Parameter(torch.zeros(cfg.m_dim, device=cfg.device, dtype=cfg.dtype))
+        self.decoder_bias = nn.Parameter(torch.zeros(cfg.m_dim, device=cfg.device, dtype=cfg.dtype))
         self.relu = nn.ReLU()
         # decoder linear layer, goes from the hidden layer back to models embeddings
         if cfg.tied:
@@ -91,6 +92,19 @@ class AutoEncoder(nn.Module):
 
         if cfg.record_data:
             self.register_data_buffers(cfg)
+
+        self.initialize()
+
+    def initialize(self):
+        # follow Anthrpic's initialization
+        nn.init.zeros_(self.encoder_bias)
+        nn.init.zeros_(self.decoder_bias)
+        
+        # initialize the decoder weights so that columns point in random directions and have fixed L2 norm of 0.1
+        initializer = RandomDirectionInitializer(0.1)
+        initializer.initialize(self.decoder.weight)
+        self.encoder.weight.copy_(self.decoder.weight.T)
+
 
     def forward(self, x, mean_over_batch=True):
         encoded = self.encode(x)
@@ -105,7 +119,7 @@ class AutoEncoder(nn.Module):
 
     def encode(self, x, record=True):
         x = x - self.pre_encoder_bias
-        x = self.relu(self.encoder(x) + self.pre_activation_bias)
+        x = self.relu(self.encoder(x) + self.encoder_bias)
         
         if self.cfg.record_data and record:
             self.record_firing_data(x)
@@ -113,7 +127,7 @@ class AutoEncoder(nn.Module):
         return x
 
     def decode(self, x):
-        return self.decoder(x) + self.pre_encoder_bias
+        return self.decoder(x) + self.decoder_bias
 
     def loss(self, x, x_out, latent, lambda_reg, mean_over_batch=True):
         #l1 = self.normalized_l1(x, latent, mean_over_batch=mean_over_batch)
@@ -339,3 +353,22 @@ class AutoEncoder(nn.Module):
         model.load_state_dict(torch.load(filename))
         print(f"Loaded model from {filename}")
         return model
+
+class RandomDirectionInitializer:
+    def __init__(self, target_norm):
+        self.target_norm = target_norm
+
+    def initialize(self, weight):
+        num_rows, num_cols = weight.size()
+
+        # Generate random vectors
+        random_vectors = torch.randn(num_rows, num_cols)
+
+        # Normalize each column
+        norms = torch.norm(random_vectors, p=2, dim=0)
+        normalized_vectors = random_vectors / norms
+
+        # Scale the norms to desired L2 norm
+        scaled_vectors = normalized_vectors * self.target_norm
+
+        weight.data.copy_(scaled_vectors)

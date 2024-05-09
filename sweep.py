@@ -49,7 +49,7 @@ def parse_args():
     argparser.add_argument("--steps_per_save", type=int, default=10000)
 
     argparser.add_argument("--wb_project", type=str, default="SAE-Anthropic_setting")
-    argparser.add_argument("--wb_entity", type=str, default="autoencoder666")
+    argparser.add_argument("--wb_entity", type=str, default="SAE666")
     argparser.add_argument("--wb_group", type=Optional[str], default=None)
     
     argparser.add_argument("--primary_device", type=str, default="cuda:0")

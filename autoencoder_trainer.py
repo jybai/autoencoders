@@ -74,9 +74,10 @@ class AutoEncoderTrainer:
 
         wandb.watch(self.encoder, log_freq=self.cfg.steps_per_report, log="gradients")
 
-    def train_on(self, acts):
+    def train_on(self, acts, max_norm = 1.0):
         enc, loss, l1, mse = self.encoder(acts)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), max_norm)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
