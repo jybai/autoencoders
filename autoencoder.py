@@ -82,7 +82,7 @@ class AutoEncoder(nn.Module):
         self.encoder_bias = nn.Parameter(torch.zeros(cfg.m_dim, device=cfg.device, dtype=cfg.dtype))
         # encoder linear layer, goes from the models embedding space to the hidden layer
         self.encoder = nn.Linear(cfg.n_dim, cfg.m_dim, bias=False, device=cfg.device, dtype=cfg.dtype)
-        self.decoder_bias = nn.Parameter(torch.zeros(cfg.m_dim, device=cfg.device, dtype=cfg.dtype))
+        self.decoder_bias = nn.Parameter(torch.zeros(cfg.n_dim, device=cfg.device, dtype=cfg.dtype))
         self.relu = nn.ReLU()
         # decoder linear layer, goes from the hidden layer back to models embeddings
         if cfg.tied:
@@ -93,9 +93,6 @@ class AutoEncoder(nn.Module):
         if cfg.record_data:
             self.register_data_buffers(cfg)
 
-        self.initialize()
-
-    def initialize(self):
         # follow Anthrpic's initialization
         nn.init.zeros_(self.encoder_bias)
         nn.init.zeros_(self.decoder_bias)
@@ -118,7 +115,7 @@ class AutoEncoder(nn.Module):
         return encoded, loss, l1, mse
 
     def encode(self, x, record=True):
-        x = x - self.pre_encoder_bias
+        #x = x - self.pre_encoder_bias
         x = self.relu(self.encoder(x) + self.encoder_bias)
         
         if self.cfg.record_data and record:

@@ -255,7 +255,9 @@ class AutoEncoderSweeper:
                 # block until all previous activations have been processed
                 # this comes before so that buffer.next() can be called in parallel, since it can be slow to refresh
                 for q in queues:
+                    #print("Start")
                     q.join()
+                    #print("End")
 
                 for k, q in enumerate(queues):
                     q.put(acts[:, 0, :])
