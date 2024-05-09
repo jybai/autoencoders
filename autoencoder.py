@@ -96,12 +96,10 @@ class AutoEncoder(nn.Module):
         # follow Anthrpic's initialization
         nn.init.zeros_(self.encoder_bias)
         nn.init.zeros_(self.decoder_bias)
-        
         # initialize the decoder weights so that columns point in random directions and have fixed L2 norm of 0.1
         initializer = RandomDirectionInitializer(0.1)
         initializer.initialize(self.decoder.weight)
-        self.encoder.weight.copy_(self.decoder.weight.T)
-
+        self.encoder.weight.data = self.decoder.weight.data.T
 
     def forward(self, x, mean_over_batch=True):
         encoded = self.encode(x)
@@ -351,6 +349,7 @@ class AutoEncoder(nn.Module):
         print(f"Loaded model from {filename}")
         return model
 
+
 class RandomDirectionInitializer:
     def __init__(self, target_norm):
         self.target_norm = target_norm
@@ -359,7 +358,7 @@ class RandomDirectionInitializer:
         num_rows, num_cols = weight.size()
 
         # Generate random vectors
-        random_vectors = torch.randn(num_rows, num_cols)
+        random_vectors = torch.randn(num_rows, num_cols, dtype = weight.dtype)
 
         # Normalize each column
         norms = torch.norm(random_vectors, p=2, dim=0)
@@ -368,4 +367,4 @@ class RandomDirectionInitializer:
         # Scale the norms to desired L2 norm
         scaled_vectors = normalized_vectors * self.target_norm
 
-        weight.data.copy_(scaled_vectors)
+        weight.data = scaled_vectors.to(weight.device)
