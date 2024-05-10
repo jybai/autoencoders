@@ -95,10 +95,14 @@ class AutoEncoderTrainer:
                 }
             else:
                 freq_data = {}
-
+            # compute variance explained
+            total_variance = torch.var(acts, dim=0).sum()
+            ve = (1 - mse / total_variance)
+            nmse = mse / self.encoder.cfg.n_dim 
             wandb.log({
                 "l1": l1.item(),
-                "mse": mse.item(),
+                "nmse": nmse.item(),
+                "variance explained": ve.item(),
                 "loss": loss.item(),
                 "lr": self.scheduler.get_last_lr()[0],
                 **freq_data,
