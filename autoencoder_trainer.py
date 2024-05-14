@@ -106,7 +106,7 @@ class AutoEncoderTrainer:
                 "loss": loss.item(),
                 "lr": self.scheduler.get_last_lr()[0],
                 **freq_data,
-            })
+            }, step=self.steps)
 
     def finish(self):
         # Log the final data if it was recorded, then finish the wandb run
@@ -116,7 +116,7 @@ class AutoEncoderTrainer:
                 "feature_density": wandb.Histogram(freqs.log10().nan_to_num(neginf=-10).cpu()),
                 "avg_l0": avg_l0,
                 "avg_fvu": avg_fvu
-            })
+            }, step=self.steps)
 
         if self.encoder.cfg.save_model:
             self.encoder.save(save_dir=wandb.run.dir, filename='autoencoder')
